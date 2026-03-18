@@ -5,6 +5,7 @@
   "description": "The fullstack application boilerplate for Adonisjs",
   "main": "index.js",
   "scripts": {
+    "production": "pm2 start process.config.js",
     "start": "node server.js",
     "test": "node ace test"
   },
