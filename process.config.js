@@ -10,6 +10,7 @@ module.exports = {
       },
       env_production: {
         NODE_ENV: "production",
+        NODE_SKIP_PLATFORM_CHECK: 1,
       },
     },
   ],
