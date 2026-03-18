@@ -39,7 +39,7 @@ new Ignitor(require("@adonisjs/fold"))
       |--------------------------------------------------------------------------
     */
 
-    cron.schedule("*/5 * * * *", async () => {
+    cron.schedule("*/1 * * * *", async () => {
       if (oneDcSupplierJob) {
         console.log("[OneDcSupplier] Previous job still running. Skipping.");
         return;
@@ -74,7 +74,7 @@ new Ignitor(require("@adonisjs/fold"))
       |--------------------------------------------------------------------------
       */
 
-    cron.schedule("0 * * * 0", async () => {
+    cron.schedule("*/1 * * * *", async () => {
       if (supplierNoRSJob) {
         console.log("[SupplierNoRS] Previous job still running. Skipping.");
         return;

@@ -21,17 +21,51 @@ class OneDcSupplier {
     console.log("Auto Update Finished");
   }
 
+  async getCheckpoint(branchName) {
+    const row = await Database.table("bo_supplier_jobs")
+      .where({
+        job_name: "OneDcSupplier",
+        branch_name: branchName,
+      })
+      .first();
+
+    return row ? row.last_page : 0;
+  }
+
+  async updateCheckpoint(branchName, page) {
+    const exists = await Database.table("bo_supplier_jobs")
+      .where("job_name", "OneDcSupplier")
+      .where("branch_name", branchName)
+      .first();
+
+    if (exists) {
+      await Database.table("bo_supplier_jobs")
+        .where("job_name", "OneDcSupplier")
+        .where("branch_name", branchName)
+        .update({
+          last_page: page,
+        });
+    } else {
+      await Database.table("bo_supplier_jobs").insert({
+        job_name: "OneDcSupplier",
+        branch_name: branchName,
+        last_page: page,
+      });
+    }
+  }
+
   async processInParallel(branches, limit) {
-    let index = 0;
+    const queue = branches.map((branch, i) => ({
+      branch,
+    }));
 
     const workers = new Array(limit).fill(null).map(async () => {
-      while (index < branches.length) {
-        const currentIndex = index++;
-        const branch = branches[currentIndex];
+      while (queue.length) {
+        const item = queue.shift(); // ✅ SAFE (single-threaded)
 
-        if (!branch) break;
+        if (!item) break;
 
-        await this.processBranch(branch);
+        await this.processBranch(item.branch);
       }
     });
 
@@ -41,7 +75,7 @@ class OneDcSupplier {
   async processBranch(branch) {
     const connectionName = branch.branch_name;
 
-    console.log(`Processing ${connectionName}`);
+    console.log(`[OneDcSupplier] Processing ${connectionName}`);
 
     try {
       const db = BranchDatabase.connect(branch);
@@ -51,11 +85,11 @@ class OneDcSupplier {
       // ✅ HEALTH CHECK
       await db.raw("SELECT 1");
 
+      let page = await this.getCheckpoint(connectionName);
+      let hasMore = true;
+
       // ✅ TRANSACTION
       await db.transaction(async (trx) => {
-        let page = 0;
-        let hasMore = true;
-
         const mainCodes = new Set();
 
         while (hasMore) {
@@ -70,24 +104,28 @@ class OneDcSupplier {
 
           if (!suppliers.length) {
             hasMore = false;
+
+            // ✅ RESET CHECKPOINT WHEN DONE
+            await this.updateCheckpoint(connectionName, 0);
             break;
           }
 
           await this.syncDatabase(trx, suppliers, mainCodes, isHO);
 
           page++;
+
+          // ✅ SAVE PROGRESS AFTER EACH BATCH
+          await this.updateCheckpoint(connectionName, page);
         }
 
         // Clean removed suppliers
         await this.deleteRemovedSuppliers(trx, mainCodes, isHO);
-
-        console.log("Supplier sync completed successfully");
       });
 
-      console.log(`✔ Updated ${branch.branch_name}`);
+      console.log(`[OneDcSupplier] Updated ${branch.branch_name}`);
     } catch (error) {
-      console.error(`✘ Failed ${branch.branch_name}`);
-      console.error(`Reason: ${error.code || error.message}`);
+      console.error(`[OneDcSupplier] Failed ${branch.branch_name}`);
+      // console.error(`Reason: ${error.code || error.message}`);
       console.log(error);
     } finally {
       await BranchDatabase.close(connectionName);
@@ -99,6 +137,13 @@ class OneDcSupplier {
     let bo_disable = 0;
     let to_delete = 0;
     let insert = false;
+
+    const code = supplier.vendorcode?.toUpperCase();
+
+    // ❌ HARD EXCLUDE
+    if (code === "ANGATK038") {
+      return { insert: false, rs_disable: 0, bo_disable: 0, to_delete: 0 };
+    }
 
     if (supplier.inactive === 1) {
       // inactive = 1 → always insert (both HO & Branch)
@@ -120,6 +165,104 @@ class OneDcSupplier {
         bo_disable = 0;
         to_delete = 1;
       }
+    }
+
+    // ✅ Force to_delete = 0 list
+    const FORCE_KEEP = new Set([
+      "3MKENT01",
+      "AJEGTR001",
+      "AKCBM001",
+      "AKCCEC001",
+      "AKCCMA001",
+      "AKCCOP001",
+      "AKCCPR001",
+      "AKCCTO001",
+      "AKCOIL001",
+      "ANGAAJ001",
+      "ANGAT0019",
+      "ANGAT005",
+      "ANGAT21",
+      "ANGAT37",
+      "ANGATBAS",
+      "ANGATBG01",
+      "ANGATBS1",
+      "ANGATCOCO",
+      "ANGATCOM1",
+      "ANGATCU",
+      "ANGATDJ1",
+      "ANGATDM022",
+      "ANGATE15",
+      "ANGATERIC",
+      "ANGATGAE",
+      "ANGATIAN",
+      "ANGATJEFF",
+      "ANGATJT",
+      "ANGATK001",
+      "ANGATK0018",
+      "ANGATK0019",
+      "ANGATK002",
+      "ANGATK0020",
+      "ANGATK0021",
+      "ANGATK0022",
+      "ANGATK0023",
+      "ANGATK003",
+      "ANGATK004",
+      "ANGATK007",
+      "ANGATK008",
+      "ANGATK009",
+      "ANGATK010",
+      "ANGATK011",
+      "ANGATK012",
+      "ANGATK013",
+      "ANGATK016",
+      "ANGATK017",
+      "ANGATK022",
+      "ANGATK023",
+      "ANGATK024",
+      "ANGATK026",
+      "ANGATK027",
+      "ANGATK029",
+      "ANGATK030",
+      "ANGATK031",
+      "ANGATK032",
+      "ANGATK033",
+      "ANGATK034",
+      "ANGATK035",
+      "ANGATK036",
+      "ANGATKA014",
+      "ANGATKA015",
+      "ANGATMEL",
+      "ANGATMNK",
+      "ANGATPAL1",
+      "ANGATPB01",
+      "ANGATPB02",
+      "ANGATPPP",
+      "ANGATR001",
+      "ANGATRA001",
+      "ANGATRD1",
+      "ANGATREN",
+      "ANGATRICE",
+      "ANGATRICE2",
+      "ANGATRON",
+      "ANGATRP1",
+      "ANGATSC023",
+      "ANGATSCG1",
+      "ANGATWE1",
+      "ANGATYCF01",
+      "ANGTKA001",
+      "ANGTKA002",
+      "ANGTKA003",
+      "ANGTKA004",
+      "JACMMK001",
+      "JIASMEA001",
+      "JLVEGG01",
+      "MASAEGGS01",
+      "RJ3BEGG",
+    ]);
+
+    // ✅ Override if in list
+    if (code && FORCE_KEEP.has(code)) {
+      to_delete = 0;
     }
 
     return { insert, rs_disable, bo_disable, to_delete };
@@ -168,7 +311,23 @@ class OneDcSupplier {
 
     // Bulk Insert
     if (inserts.length) {
-      await trx.table("0_rms_exluded_supplier").insert(inserts);
+      await trx.raw(
+        `
+  INSERT INTO 0_rms_exluded_supplier 
+  (supplier_code, rs_disable, bo_disable, to_delete)
+  VALUES ${inserts.map(() => "(?, ?, ?, ?)").join(",")}
+  ON DUPLICATE KEY UPDATE
+    rs_disable = VALUES(rs_disable),
+    bo_disable = VALUES(bo_disable),
+    to_delete = VALUES(to_delete)
+`,
+        inserts.flatMap((i) => [
+          i.supplier_code,
+          i.rs_disable,
+          i.bo_disable,
+          i.to_delete,
+        ]),
+      );
     }
 
     // Bulk Update using CASE WHEN
@@ -183,16 +342,11 @@ class OneDcSupplier {
         .map((u) => `WHEN '${u.supplier_code}' THEN ${u.bo_disable}`)
         .join(" ");
 
-      const tdCase = updates
-        .map((u) => `WHEN '${u.supplier_code}' THEN ${u.to_delete}`)
-        .join(" ");
-
       await trx.raw(`
         UPDATE \`0_rms_exluded_supplier\`
         SET
           rs_disable = CASE supplier_code ${rsCase} END,
-          bo_disable = CASE supplier_code ${boCase} END,
-          to_delete = CASE supplier_code ${tdCase} END
+          bo_disable = CASE supplier_code ${boCase} END
         WHERE supplier_code IN (${codes})
       `);
     }

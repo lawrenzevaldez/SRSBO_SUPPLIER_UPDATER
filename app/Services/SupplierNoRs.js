@@ -39,18 +39,52 @@ class SupplierNoRs {
     console.log("Auto Update Finished");
   }
 
+  async getCheckpoint(branchName) {
+    const row = await Database.table("bo_supplier_jobs")
+      .where({
+        job_name: "SupplierNoRS",
+        branch_name: branchName,
+      })
+      .first();
+
+    return row ? row.last_page : 0;
+  }
+
+  async updateCheckpoint(branchName, page) {
+    const exists = await Database.table("bo_supplier_jobs")
+      .where("job_name", "SupplierNoRS")
+      .where("branch_name", branchName)
+      .first();
+
+    if (exists) {
+      await Database.table("bo_supplier_jobs")
+        .where("job_name", "SupplierNoRS")
+        .where("branch_name", branchName)
+        .update({
+          last_page: page,
+        });
+    } else {
+      await Database.table("bo_supplier_jobs").insert({
+        job_name: "SupplierNoRS",
+        branch_name: branchName,
+        last_page: page,
+      });
+    }
+  }
+
   async processInParallel(branches, branches_aria, limit) {
-    let index = 0;
+    const queue = branches.map((branch, i) => ({
+      branch,
+      branch_aria: branches_aria[i],
+    }));
 
     const workers = new Array(limit).fill(null).map(async () => {
-      while (index < branches.length) {
-        const currentIndex = index++;
-        const branch = branches[currentIndex];
-        const branch_aria = branches_aria[currentIndex];
+      while (queue.length) {
+        const item = queue.shift(); // ✅ SAFE (single-threaded)
 
-        if (!branch || !branch_aria) break;
+        if (!item) break;
 
-        await this.processBranch(branch, branch_aria);
+        await this.processBranch(item.branch, item.branch_aria);
       }
     });
 
@@ -61,7 +95,7 @@ class SupplierNoRs {
     const connectionName = branch.branch_name;
     branch_aria.branch_name = branch_aria.branch_name + "2";
 
-    console.log(`Processing ${connectionName}`);
+    console.log(`[SupplierNoRS] Processing ${connectionName}`);
 
     try {
       const db = BranchDatabase.connect(branch);
@@ -71,10 +105,11 @@ class SupplierNoRs {
       // ✅ HEALTH CHECK
       await db.raw("SELECT 1");
 
-      await db.transaction(async (trx) => {
-        let page = 0;
-        let hasMore = true;
+      // ✅ GET LAST PAGE
+      let page = await this.getCheckpoint(connectionName);
+      let hasMore = true;
 
+      await db.transaction(async (trx) => {
         // Get existing suppliers once
         const existingSuppliers = await this.getBranchSupplierMap(trx);
 
@@ -94,20 +129,24 @@ class SupplierNoRs {
 
           if (!suppliers.length) {
             hasMore = false;
+
+            // ✅ RESET CHECKPOINT WHEN DONE
+            await this.updateCheckpoint(connectionName, 0);
             break;
           }
 
           await this.syncDatabase(trx, suppliers, existingSuppliers);
 
           page++;
-        }
 
-        console.log("Supplier sync completed successfully");
+          // ✅ SAVE PROGRESS AFTER EACH BATCH
+          await this.updateCheckpoint(connectionName, page);
+        }
       });
 
-      console.log(`✔ Updated ${branch.branch_name}`);
+      console.log(`[SupplierNoRS] Updated ${branch.branch_name}`);
     } catch (error) {
-      console.error(`✘ Failed ${branch.branch_name}`);
+      console.error(`[SupplierNoRS] Failed ${branch.branch_name}`);
       console.error(`Reason: ${error.code || error.message}`);
     } finally {
       await BranchDatabase.close(connectionName);
@@ -116,8 +155,20 @@ class SupplierNoRs {
   }
 
   computeValues(supplier) {
+    const code = supplier.vendorcode?.toUpperCase();
+
+    // ❌ Do NOT insert this specific code
+    if (code === "ANGATK038") {
+      return {
+        insert: false,
+        rs_disable: 1,
+        bo_disable: 0,
+        to_delete: 0,
+      };
+    }
+
     return {
-      insert: true, // always insert if not exists
+      insert: true,
       rs_disable: 1,
       bo_disable: 0,
       to_delete: 0,
@@ -135,29 +186,40 @@ class SupplierNoRs {
   }
 
   async syncDatabase(trx, suppliers, existingSuppliers) {
+    if (!suppliers.length) return;
+
     const inserts = [];
 
     for (const s of suppliers) {
-      // Skip if supplier already exists
+      // Skip if already processed in-memory
       if (existingSuppliers.has(s.supp_ref)) continue;
 
       const values = this.computeValues(s);
 
-      inserts.push({
-        supplier_code: s.supp_ref,
-        rs_disable: values.rs_disable,
-        bo_disable: values.bo_disable,
-        to_delete: values.to_delete,
-      });
+      inserts.push([
+        s.supp_ref,
+        values.rs_disable,
+        values.bo_disable,
+        values.to_delete,
+      ]);
 
-      // Add to set to prevent duplicate inserts in the same batch
       existingSuppliers.add(s.supp_ref);
     }
 
-    if (inserts.length) {
-      console.log(`Inserting ${inserts.length} suppliers`);
-      await trx.table("0_rms_exluded_supplier").insert(inserts);
-    }
+    if (!inserts.length) return;
+
+    await trx.raw(
+      `
+    INSERT INTO 0_rms_exluded_supplier
+      (supplier_code, rs_disable, bo_disable, to_delete)
+    VALUES ${inserts.map(() => "(?, ?, ?, ?)").join(",")}
+    ON DUPLICATE KEY UPDATE
+      rs_disable = VALUES(rs_disable),
+      bo_disable = VALUES(bo_disable),
+      to_delete = VALUES(to_delete)
+  `,
+      inserts.flat(),
+    );
   }
 }
 
