@@ -5,6 +5,7 @@ module.exports = {
       script: "./server.js",
       watch: ["start", "config", "app", "resources"],
       ignore_watch: ["node_modules", "tmp", "public", "server.js"],
+      cron_restart: "10 */2 * * *",
       env: {
         NODE_ENV: "development",
       },
