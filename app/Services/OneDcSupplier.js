@@ -21,6 +21,27 @@ class OneDcSupplier {
     console.log("Auto Update Finished");
   }
 
+  // ✅ Pause system (HO / ALL support)
+  async getPausedSuppliers() {
+    // delete expired first
+    await Database.table("supplier_exclusion_pause")
+      .where("resume_at", "<=", Database.raw("NOW()"))
+      .delete();
+
+    const rows = await Database.table("supplier_exclusion_pause").select(
+      "supplier_code",
+      "pause_type",
+    );
+
+    const map = new Map();
+
+    for (const r of rows) {
+      map.set(r.supplier_code, r.pause_type); // 1 = HO, 2 = ALL
+    }
+
+    return map;
+  }
+
   async getCheckpoint(branchName) {
     const row = await Database.table("bo_supplier_jobs")
       .where({
@@ -85,6 +106,9 @@ class OneDcSupplier {
       // ✅ HEALTH CHECK
       await db.raw("SELECT 1");
 
+      // ✅ Load paused suppliers once per branch run
+      const pausedMap = await this.getPausedSuppliers();
+
       let page = await this.getCheckpoint(connectionName);
       let hasMore = true;
 
@@ -110,7 +134,7 @@ class OneDcSupplier {
             break;
           }
 
-          await this.syncDatabase(trx, suppliers, mainCodes, isHO);
+          await this.syncDatabase(trx, suppliers, mainCodes, isHO, pausedMap);
 
           page++;
 
@@ -119,7 +143,7 @@ class OneDcSupplier {
         }
 
         // Clean removed suppliers
-        await this.deleteRemovedSuppliers(trx, mainCodes, isHO);
+        await this.deleteRemovedSuppliers(trx, mainCodes, isHO, pausedMap);
       });
 
       console.log(`[OneDcSupplier] Updated ${branch.branch_name}`);
@@ -278,7 +302,7 @@ class OneDcSupplier {
     return new Set(rows.map((r) => r.supplier_code));
   }
 
-  async syncDatabase(trx, suppliers, mainCodes, isHO = false) {
+  async syncDatabase(trx, suppliers, mainCodes, isHO = false, pausedMap) {
     const branchSet = await this.getBranchSupplierMap(trx);
 
     const inserts = [];
@@ -287,7 +311,16 @@ class OneDcSupplier {
     for (const s of suppliers) {
       mainCodes.add(s.vendorcode);
 
+      // ✅ PAUSE LOGIC FIXED
+      const pauseType = pausedMap.get(code);
+
+      if (pauseType === 2) continue; // ALL branches
+      if (pauseType === 1 && isHO) continue; // HO only
+
       const values = this.computeValues(s, isHO);
+
+      // ❌ Skip paused suppliers
+      if (pausedSuppliers.has(code)) continue;
 
       // Skip if not allowed to insert
       if (!values.insert) continue;
@@ -352,7 +385,7 @@ class OneDcSupplier {
     }
   }
 
-  async deleteRemovedSuppliers(trx, mainCodes, isHO) {
+  async deleteRemovedSuppliers(trx, mainCodes, isHO, pausedMap) {
     const exists = await trx.raw("SHOW TABLES LIKE '0_rms_exluded_supplier'");
     if (!exists[0].length) return;
 
@@ -364,6 +397,14 @@ class OneDcSupplier {
     const toDelete = [];
 
     for (const r of rows) {
+      // ❌ Do not delete paused suppliers
+      if (pausedSuppliers.has(r.supplier_code)) continue;
+
+      // ❌ NEVER delete paused
+      const pauseType = pausedMap.get(code);
+      if (pauseType === 2) continue;
+      if (pauseType === 1 && isHO) continue;
+
       // 1️⃣ Delete if no longer exists in main server
       if (!mainCodes.has(r.supplier_code)) {
         toDelete.push(r.supplier_code);

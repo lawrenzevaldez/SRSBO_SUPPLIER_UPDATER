@@ -39,6 +39,27 @@ class SupplierNoRs {
     console.log("Auto Update Finished");
   }
 
+  // ✅ UPDATED: supports pause_type (1 = HO, 2 = ALL)
+  async getPausedSuppliers() {
+    // 🔥 delete expired first
+    await Database.table("supplier_exclusion_pause")
+      .where("resume_at", "<=", Database.raw("NOW()"))
+      .delete();
+
+    const rows = await Database.table("supplier_exclusion_pause").select(
+      "supplier_code",
+      "pause_type",
+    );
+
+    const map = new Map();
+
+    for (const r of rows) {
+      map.set(r.supplier_code, r.pause_type);
+    }
+
+    return map;
+  }
+
   async getCheckpoint(branchName) {
     const row = await Database.table("bo_supplier_jobs")
       .where({
@@ -105,6 +126,8 @@ class SupplierNoRs {
       // ✅ HEALTH CHECK
       await db.raw("SELECT 1");
 
+      const pausedMap = await this.getPausedSuppliers();
+
       // ✅ GET LAST PAGE
       let page = await this.getCheckpoint(connectionName);
       let hasMore = true;
@@ -135,7 +158,13 @@ class SupplierNoRs {
             break;
           }
 
-          await this.syncDatabase(trx, suppliers, existingSuppliers);
+          await this.syncDatabase(
+            trx,
+            suppliers,
+            existingSuppliers,
+            pausedMap,
+            isHO,
+          );
 
           page++;
 
@@ -185,12 +214,18 @@ class SupplierNoRs {
     return new Set(rows.map((r) => r.supplier_code));
   }
 
-  async syncDatabase(trx, suppliers, existingSuppliers) {
+  async syncDatabase(trx, suppliers, existingSuppliers, pausedMap, isHO) {
     if (!suppliers.length) return;
 
     const inserts = [];
 
     for (const s of suppliers) {
+      const pauseType = pausedMap.get(code);
+
+      // ❌ APPLY PAUSE LOGIC
+      if (pauseType === 2) continue; // pause all
+      if (pauseType === 1 && isHO) continue; // pause HO only
+
       // Skip if already processed in-memory
       if (existingSuppliers.has(s.supp_ref)) continue;
 
