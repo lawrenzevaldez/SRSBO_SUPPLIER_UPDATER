@@ -312,7 +312,7 @@ class OneDcSupplier {
       mainCodes.add(s.vendorcode);
 
       // ✅ PAUSE LOGIC FIXED
-      const pauseType = pausedMap.get(code);
+      const pauseType = pausedMap.get(s.vendorcode);
 
       if (pauseType === 2) continue; // ALL branches
       if (pauseType === 1 && isHO) continue; // HO only

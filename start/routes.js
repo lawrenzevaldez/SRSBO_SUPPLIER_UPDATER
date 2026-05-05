@@ -19,6 +19,6 @@ const Route = use("Route");
 Route.on("/").render("welcome");
 
 Route.group(() => {
-  // Route.get("/send", "OneDcSupplierController.run");
+  Route.get("/send", "OneDcSupplierController.run");
   // Route.get("/send", "SupplierNoRsController.run");
 }).prefix("api");

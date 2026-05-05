@@ -220,7 +220,7 @@ class SupplierNoRs {
     const inserts = [];
 
     for (const s of suppliers) {
-      const pauseType = pausedMap.get(code);
+      const pauseType = pausedMap.get(s.supp_ref);
 
       // ❌ APPLY PAUSE LOGIC
       if (pauseType === 2) continue; // pause all
