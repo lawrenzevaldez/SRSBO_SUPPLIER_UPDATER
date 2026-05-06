@@ -184,7 +184,7 @@ class SupplierNoRs {
   }
 
   computeValues(supplier) {
-    const code = supplier.vendorcode?.toUpperCase();
+    const code = supplier.supp_ref?.toUpperCase();
 
     // ❌ Do NOT insert this specific code
     if (code === "ANGATK038") {

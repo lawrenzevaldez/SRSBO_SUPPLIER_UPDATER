@@ -319,9 +319,6 @@ class OneDcSupplier {
 
       const values = this.computeValues(s, isHO);
 
-      // ❌ Skip paused suppliers
-      if (pausedSuppliers.has(code)) continue;
-
       // Skip if not allowed to insert
       if (!values.insert) continue;
 
@@ -397,8 +394,7 @@ class OneDcSupplier {
     const toDelete = [];
 
     for (const r of rows) {
-      // ❌ Do not delete paused suppliers
-      if (pausedSuppliers.has(r.supplier_code)) continue;
+      const code = r.supplier_code;
 
       // ❌ NEVER delete paused
       const pauseType = pausedMap.get(code);
